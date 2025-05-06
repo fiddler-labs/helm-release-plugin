@@ -42,6 +42,8 @@ Usage:
 
 function create_ttl() {
 	RELEASE=$1
+	# This Bash substitution replaces all underscores with spaces.
+	# Must for GitHub CI run
 	TIME_DELTA="${2//_/ }"
 	SERVICE_ACCOUNT=$3
 	cronjob_name="$RELEASE-ttl"
