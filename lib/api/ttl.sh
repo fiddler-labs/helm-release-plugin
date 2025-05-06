@@ -42,7 +42,7 @@ Usage:
 
 function create_ttl() {
 	RELEASE=$1
-	TIME_DELTA=$2
+	TIME_DELTA="${2//_/ }"
 	SERVICE_ACCOUNT=$3
 	cronjob_name="$RELEASE-ttl"
 	now=$(date --utc "+%s")
