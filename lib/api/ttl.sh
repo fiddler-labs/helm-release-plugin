@@ -3,6 +3,18 @@
 HELM_VERSION="3.17.0"
 KUBECTL_VERSION="1.33.4"
 
+# macOS ships BSD date, which doesn't understand GNU's --utc/--date=. Prefer
+# GNU date (gdate, from `brew install coreutils`) when the system `date`
+# isn't GNU date.
+if date --version >/dev/null 2>&1; then
+	DATE_BIN="date"
+elif command -v gdate >/dev/null 2>&1; then
+	DATE_BIN="gdate"
+else
+	printf '%s\n' "GNU date is required. On macOS: brew install coreutils." >&2
+	exit 1
+fi
+
 help_text="
 Sets release TTL. Under the hood creates Kubernetes CronJob that will delete specific release in concrete time.
 Usage:
@@ -47,9 +59,9 @@ function create_ttl() {
 	TIME_DELTA="${2//_/ }"
 	SERVICE_ACCOUNT=$3
 	cronjob_name="$RELEASE-ttl"
-	now=$(date --utc "+%s")
-	scheduled_time=$(date --utc --date="$TIME_DELTA" "+%s")
-	schedule=$(date --utc --date="$TIME_DELTA" "+%M %H %d %m *")
+	now=$($DATE_BIN --utc "+%s")
+	scheduled_time=$($DATE_BIN --utc --date="$TIME_DELTA" "+%s")
+	schedule=$($DATE_BIN --utc --date="$TIME_DELTA" "+%M %H %d %m *")
 
 	if (( scheduled_time < now )); then
 		printf '%s\n' 'Release TTL was set in past. TTL must be a future time.'
@@ -115,7 +127,7 @@ function read_ttl() {
 	hours=${schedule:3:2}
 	day=${schedule:6:2}
 	month=${schedule:9:2}
-	year=$(date +'%Y')
+	year=$($DATE_BIN +'%Y')
 
 	case $OUTPUT in
 		(json)
@@ -123,7 +135,7 @@ function read_ttl() {
 		(yaml)
 			printf "scheduled_date: %s\n" "$year-$month-$day $hours:$minutes" ;;
 		(*)
-			release_removal_date=$(date --date="$year-$month-$day $hours:$minutes")
+			release_removal_date=$($DATE_BIN --date="$year-$month-$day $hours:$minutes")
 			printf "Scheduled release removal date: %s\n" "$release_removal_date" ;;
 	esac
 }
