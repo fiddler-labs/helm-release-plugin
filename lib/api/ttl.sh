@@ -26,6 +26,8 @@ Usage:
 		after a successful Helm uninstall, including retained StatefulSet PVCs.
 		This deletes all resources in that namespace, including other releases.
 		The service account must have permission to delete namespaces.
+		Setting this flag checks that permission by impersonating the service account
+		and its standard groups; the caller must have those impersonation permissions.
 		helm release ttl redis --namespace=disposable --set='1 day' --delete-namespace
 
 	helm release ttl <RELEASE NAME> [ -o --output [ text | yaml | json ] ] - returns Kubernetes CronJob description.
@@ -62,6 +64,17 @@ function create_ttl() {
 				return 1
 				;;
 		esac
+		# Fail before scheduling rather than discovering missing RBAC after uninstall.
+		# Include the groups used by service-account authentication so group grants count.
+		if ! kubectl auth can-i delete "namespace/$HELM_NAMESPACE" \
+			--as="system:serviceaccount:$HELM_NAMESPACE:$SERVICE_ACCOUNT" \
+			--as-group=system:serviceaccounts \
+			--as-group="system:serviceaccounts:$HELM_NAMESPACE" \
+			--as-group=system:authenticated \
+			--context="$HELM_KUBECONTEXT" >/dev/null; then
+			printf '%s\n' "Cannot verify namespace deletion permission for service account '$SERVICE_ACCOUNT' in '$HELM_NAMESPACE'. Check namespace-delete RBAC, caller impersonation permissions, and API connectivity." >&2
+			return 1
+		fi
 		# Do not wait for deletion: this job itself belongs to the namespace.
 		cleanup_args="[ 'delete', 'namespace', '$HELM_NAMESPACE', '--wait=false', '--ignore-not-found=true' ]"
 	fi

@@ -16,6 +16,11 @@ date() {
     esac
 }
 kubectl() {
+    if [[ "$1" == auth ]]; then
+        [[ "$*" == "auth can-i delete namespace/ttl-test --as=system:serviceaccount:ttl-test:${EXPECTED_SERVICE_ACCOUNT:-default} --as-group=system:serviceaccounts --as-group=system:serviceaccounts:ttl-test --as-group=system:authenticated --context=test-context" ]] || return 99
+        printf '%s\n' "${AUTH_RESPONSE:-yes}"
+        return "${AUTH_EXIT_CODE:-0}"
+    fi
     if [[ "$1" != apply ]]; then
         echo "Unexpected kubectl command: $*" >&2
         return 1
@@ -60,5 +65,22 @@ for action in --unset --output=yaml; do
         exit 1
     fi
 done
+
+# Authorization denial and API/impersonation failures must not create a job.
+for status in 1 2; do
+    if output=$(AUTH_EXIT_CODE=$status release_ttl sample --set=tomorrow --delete-namespace 2>&1); then
+        echo 'Namespace cleanup unexpectedly accepted a failed authorization check' >&2
+        exit 1
+    fi
+    if grep -Fq 'kind: CronJob' <<< "$output"; then
+        echo 'Failed authorization must not apply a CronJob' >&2
+        exit 1
+    fi
+done
+manifest=$(EXPECTED_SERVICE_ACCOUNT=cleanup release_ttl sample --service-account=cleanup --set=tomorrow --delete-namespace)
+grep -Fq 'serviceAccountName: cleanup' <<< "$manifest"
+# Release-only TTL must not require impersonation or namespace-delete access.
+manifest=$(AUTH_EXIT_CODE=1 release_ttl sample --set=tomorrow)
+grep -Fq "'delete', 'cronjob'" <<< "$manifest"
 
 echo 'TTL manifest tests passed'
