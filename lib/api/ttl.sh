@@ -22,6 +22,14 @@ Usage:
 
 		This service account will be used in the job when the ttl time expires and the cleanup is triggered.
 
+		For disposable namespaces, add --delete-namespace to remove the entire namespace
+		after a successful Helm uninstall, including retained StatefulSet PVCs.
+		This deletes all resources in that namespace, including other releases.
+		The service account must have permission to delete namespaces.
+		Setting this flag checks that permission by impersonating the service account
+		and its standard groups; the caller must have those impersonation permissions.
+		helm release ttl redis --namespace=disposable --set='1 day' --delete-namespace
+
 	helm release ttl <RELEASE NAME> [ -o --output [ text | yaml | json ] ] - returns Kubernetes CronJob description.
 		Examples:
 		helm release ttl redis --namespace=release-namespace
@@ -46,7 +54,30 @@ function create_ttl() {
 	# Must for GitHub CI run
 	TIME_DELTA="${2//_/ }"
 	SERVICE_ACCOUNT=$3
+	local delete_namespace=${4:-false}
 	cronjob_name="$RELEASE-ttl"
+	local cleanup_args="[ 'delete', 'cronjob', '$cronjob_name' ]"
+	if [[ "$delete_namespace" == true ]]; then
+		case "$HELM_NAMESPACE" in
+			""|default|kube-system|kube-public|kube-node-lease)
+				printf '%s\n' 'Namespace cleanup requires a dedicated, non-system namespace.'
+				return 1
+				;;
+		esac
+		# Fail before scheduling rather than discovering missing RBAC after uninstall.
+		# Include the groups used by service-account authentication so group grants count.
+		if ! kubectl auth can-i delete "namespace/$HELM_NAMESPACE" \
+			--as="system:serviceaccount:$HELM_NAMESPACE:$SERVICE_ACCOUNT" \
+			--as-group=system:serviceaccounts \
+			--as-group="system:serviceaccounts:$HELM_NAMESPACE" \
+			--as-group=system:authenticated \
+			--context="$HELM_KUBECONTEXT" >/dev/null; then
+			printf '%s\n' "Cannot verify namespace deletion permission for service account '$SERVICE_ACCOUNT' in '$HELM_NAMESPACE'. Check namespace-delete RBAC, caller impersonation permissions, and API connectivity." >&2
+			return 1
+		fi
+		# Do not wait for deletion: this job itself belongs to the namespace.
+		cleanup_args="[ 'delete', 'namespace', '$HELM_NAMESPACE', '--wait=false', '--ignore-not-found=true' ]"
+	fi
 	now=$(date --utc "+%s")
 	scheduled_time=$(date --utc --date="$TIME_DELTA" "+%s")
 	schedule=$(date --utc --date="$TIME_DELTA" "+%M %H %d %m *")
@@ -74,12 +105,12 @@ function create_ttl() {
                     - name: release-ttl-terminator
                       image: alpine/helm:$HELM_VERSION
                       imagePullPolicy: IfNotPresent
-                      args: [ 'uninstall', '$RELEASE' ]
+                      args: [ 'uninstall', '$RELEASE', '--namespace', '$HELM_NAMESPACE' ]
                   containers:
                     - name: release-ttl-cleaner
                       image: alpine/kubectl:$KUBECTL_VERSION
                       imagePullPolicy: IfNotPresent
-                      args: [ 'delete', 'cronjob', '$cronjob_name' ]
+                      args: $cleanup_args
                   restartPolicy: OnFailure
                   serviceAccountName: $SERVICE_ACCOUNT"
 	echo "$manifest" | kubectl apply --filename=- --namespace=$HELM_NAMESPACE --context=$HELM_KUBECONTEXT
@@ -140,6 +171,7 @@ function release_ttl() {
 	ACTION="read"  # Work mode. Possible options are: 'read' | 'set' | 'unset'.
 	OUTPUT="text"
 	SERVICE_ACCOUNT="default"
+	local delete_namespace=false
 
 	RELEASE=$1
 	shift
@@ -180,6 +212,10 @@ function release_ttl() {
 				ACTION='unset'
 				shift
 				;;
+			(--delete-namespace)
+				delete_namespace=true
+				shift
+				;;
 			(-o|--output)
 				shift
 				if test $# -gt 0; then
@@ -213,9 +249,14 @@ function release_ttl() {
 		esac
 	done
 
+	if [[ "$delete_namespace" == true && "$ACTION" != set ]]; then
+		printf '%s\n' '--delete-namespace requires --set.'
+		return 1
+	fi
+
 	case "$ACTION" in
 		(set)
-			create_ttl $RELEASE "$SET_DATE" "$SERVICE_ACCOUNT"
+			create_ttl $RELEASE "$SET_DATE" "$SERVICE_ACCOUNT" "$delete_namespace"
 			;;
 		(read)
 			read_ttl $RELEASE

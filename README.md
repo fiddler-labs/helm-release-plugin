@@ -170,6 +170,44 @@ helm release ttl redis --set='5 minutes'
 cronjob.batch/redis-ttl configured
 ```
 
+##### Delete a disposable namespace at expiry
+
+By default, TTL uninstalls only the release and removes its TTL CronJob.
+StatefulSet-created PVCs can remain after uninstall.
+For a disposable namespace, add `--delete-namespace` with `--set`:
+
+```shell
+helm release ttl redis --namespace=disposable \
+  --service-account=ttl-cleaner --set='1 day' --delete-namespace
+```
+
+> **Warning:** This deletes the entire namespace, including every other release,
+> PVC, and resource in it.
+> Use it only for a dedicated disposable namespace.
+> Empty, `default`, `kube-system`, `kube-public`, and `kube-node-lease` namespaces are rejected.
+
+Create the `ttl-cleaner` service account and grant its Helm uninstall permissions
+and permission to delete the target namespace before setting the TTL.
+The plugin runs `kubectl auth can-i` as that service account and its standard groups.
+The caller needs permission to impersonate the service account and those groups.
+Authorization denial, missing impersonation permissions, or an API error fails scheduling;
+the plugin does not create or update the CronJob in that case.
+Keep these permissions valid until the job finishes:
+the preflight cannot detect later RBAC changes.
+
+At expiry, namespace deletion starts only after Helm uninstall succeeds.
+The cleaner uses `--wait=false` because its own job belongs to the namespace.
+Finalizers can delay deletion, and removing PVCs only deletes their backing volumes
+when the corresponding PV's `persistentVolumeReclaimPolicy` is `Delete`.
+Check the actual PV policies before expecting storage reclamation:
+
+```shell
+kubectl get pv -o custom-columns='NAME:.metadata.name,NAMESPACE:.spec.claimRef.namespace,STORAGECLASS:.spec.storageClassName,RECLAIM:.spec.persistentVolumeReclaimPolicy'
+```
+
+Existing TTL jobs do not change when you update the plugin.
+Run `--set` again with `--delete-namespace` to reschedule them with namespace cleanup.
+
 #### UNSET TTL
 To remove release TTL pass `<RELEASE NAME>` and `--unset` flag. 
 ```
@@ -242,4 +280,3 @@ Who is using helm-release-plugin:
 <a href="https://jovianx.com">
     <img src=https://jovianx.com/wp-content/uploads/2021/05/Logo2-2.png  height="50">
 </a>
-
